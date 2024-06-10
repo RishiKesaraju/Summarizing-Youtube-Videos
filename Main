@@ -1,0 +1,221 @@
+import os
+import moviepy.editor as mp
+import speech_recognition as sr
+from transformers import pipeline, AutoTokenizer, AutoModelForSeq2SeqLM
+from pytube import YouTube
+import logging
+
+# Setup logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# Download YouTube video
+def download_youtube_video(url, output_path="video.mp4"):
+    try:
+        logging.info("Downloading video from YouTube...")
+        yt = YouTube(url)
+        stream = yt.streams.filter(file_extension='mp4').first()
+        stream.download(filename=output_path)
+        logging.info(f"Video downloaded to {output_path}")
+    except Exception as e:
+        logging.error(f"Failed to download video: {e}")
+
+# Extract audio from video
+def extract_audio_from_video(video_path, audio_path="audio.wav"):
+    try:
+        logging.info("Extracting audio from video...")
+        video = mp.VideoFileClip(video_path)
+        video.audio.write_audiofile(audio_path)
+        logging.info(f"Audio extracted to {audio_path}")
+    except Exception as e:
+        logging.error(f"Failed to extract audio: {e}")
+
+# Transcribe audio to text
+def transcribe_audio(audio_path):
+    try:
+        logging.info("Transcribing audio to text...")
+        recognizer = sr.Recognizer()
+        with sr.AudioFile(audio_path) as source:
+            audio = recognizer.record(source)
+        text = recognizer.recognize_google(audio)
+        logging.info("Transcription completed")
+        return text
+    except sr.RequestError as e:
+        logging.error(f"Could not request results from Google Speech Recognition service; {e}")
+    except sr.UnknownValueError:
+        logging.error("Google Speech Recognition could not understand audio")
+
+# Summarize text
+def summarize_text(text, model_name="facebook/bart-large-cnn"):
+    try:
+        logging.info("Summarizing text...")
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+        summarizer = pipeline("summarization", model=model, tokenizer=tokenizer)
+        
+        max_chunk = 512
+        text_chunks = [text[i:i+max_chunk] for i in range(0, len(text), max_chunk)]
+        summary = ""
+        
+        for chunk in text_chunks:
+            summary_chunk = summarizer(chunk, max_length=150, min_length=30, do_sample=False)
+            summary += summary_chunk[0]['summary_text'] + " "
+        
+        logging.info("Summarization completed")
+        return summary.strip()
+    except Exception as e:
+        logging.error(f"Failed to summarize text: {e}")
+
+# Extract key elements and facts
+def extract_key_elements(text, model_name="deepset/roberta-base-squad2"):
+    try:
+        logging.info("Extracting key elements and facts...")
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+        nlp = pipeline("question-answering", model=model, tokenizer=tokenizer)
+        
+        questions = [
+            "What is the video about?",
+            "Who is speaking in the video?",
+            "What are the main topics discussed?",
+            "What are the key facts mentioned?"
+        ]
+        
+        key_elements = {}
+        for question in questions:
+            result = nlp(question=question, context=text)
+            key_elements[question] = result['answer']
+        
+        logging.info("Key elements and facts extraction completed")
+        return key_elements
+    except Exception as e:
+        logging.error(f"Failed to extract key elements: {e}")
+
+# Generate report
+def generate_report(summary, key_elements):
+    try:
+        logging.info("Generating report...")
+        report = f"Summary:\n{summary}\n\nKey Elements and Facts:\n"
+        for question, answer in key_elements.items():
+            report += f"{question}\n{answer}\n\n"
+        logging.info("Report generation completed")
+        return report
+    except Exception as e:
+        logging.error(f"Failed to generate report: {e}")
+
+# Save report to file
+def save_report(report, output_path="report.txt"):
+    try:
+        with open(output_path, "w") as f:
+            f.write(report)
+        logging.info(f"Report saved to {output_path}")
+    except Exception as e:
+        logging.error(f"Failed to save report: {e}")
+
+# Load pre-trained models for efficiency
+def load_models():
+    try:
+        logging.info("Loading pre-trained models...")
+        summarizer_model_name = "facebook/bart-large-cnn"
+        summarizer_tokenizer = AutoTokenizer.from_pretrained(summarizer_model_name)
+        summarizer_model = AutoModelForSeq2SeqLM.from_pretrained(summarizer_model_name)
+
+        qa_model_name = "deepset/roberta-base-squad2"
+        qa_tokenizer = AutoTokenizer.from_pretrained(qa_model_name)
+        qa_model = AutoModelForSeq2SeqLM.from_pretrained(qa_model_name)
+
+        logging.info("Models loaded successfully")
+        return (summarizer_model, summarizer_tokenizer, qa_model, qa_tokenizer)
+    except Exception as e:
+        logging.error(f"Failed to load models: {e}")
+
+# Split text into smaller chunks for processing
+def split_text(text, max_chunk=512):
+    return [text[i:i+max_chunk] for i in range(0, len(text), max_chunk)]
+
+# Main function
+def main(url, video_path="video.mp4", audio_path="audio.wav", report_path="report.txt"):
+    download_youtube_video(url, video_path)
+    extract_audio_from_video(video_path, audio_path)
+    text = transcribe_audio(audio_path)
+
+    summarizer_model, summarizer_tokenizer, qa_model, qa_tokenizer = load_models()
+
+    summarizer = pipeline("summarization", model=summarizer_model, tokenizer=summarizer_tokenizer)
+    summary = summarize_text_with_pipeline(text, summarizer)
+
+    nlp = pipeline("question-answering", model=qa_model, tokenizer=qa_tokenizer)
+    key_elements = extract_key_elements_with_pipeline(text, nlp)
+
+    report = generate_report(summary, key_elements)
+    save_report(report, report_path)
+
+def summarize_text_with_pipeline(text, summarizer):
+    logging.info("Summarizing text with pipeline...")
+    max_chunk = 512
+    text_chunks = split_text(text, max_chunk)
+    summary = ""
+    
+    for chunk in text_chunks:
+        summary_chunk = summarizer(chunk, max_length=150, min_length=30, do_sample=False)
+        summary += summary_chunk[0]['summary_text'] + " "
+    
+    logging.info("Summarization with pipeline completed")
+    return summary.strip()
+
+def extract_key_elements_with_pipeline(text, nlp):
+    logging.info("Extracting key elements with pipeline...")
+    questions = [
+        "What is the video about?",
+        "Who is speaking in the video?",
+        "What are the main topics discussed?",
+        "What are the key facts mentioned?"
+    ]
+    
+    key_elements = {}
+    for question in questions:
+        result = nlp(question=question, context=text)
+        key_elements[question] = result['answer']
+    
+    logging.info("Key elements extraction with pipeline completed")
+    return key_elements
+
+# Additional functions for extended functionality
+
+# Function to convert audio to text with error handling
+def safe_transcribe_audio(audio_path):
+    try:
+        return transcribe_audio(audio_path)
+    except Exception as e:
+        logging.error(f"Failed to transcribe audio: {e}")
+        return ""
+
+# Function to download and process multiple videos
+def process_multiple_videos(urls, report_dir="reports"):
+    os.makedirs(report_dir, exist_ok=True)
+    for i, url in enumerate(urls):
+        logging.info(f"Processing video {i+1}/{len(urls)}")
+        main(url, video_path=f"video_{i}.mp4", audio_path=f"audio_{i}.wav", report_path=os.path.join(report_dir, f"report_{i}.txt"))
+
+# Function to display key elements in a user-friendly way
+def display_key_elements(key_elements):
+    logging.info("Displaying key elements and facts:")
+    for question, answer in key_elements.items():
+        logging.info(f"{question}: {answer}")
+
+# Function to plot summary length distribution
+def plot_summary_length_distribution(summaries):
+    import matplotlib.pyplot as plt
+    lengths = [len(summary.split()) for summary in summaries]
+    plt.hist(lengths, bins=20)
+    plt.title("Summary Length Distribution")
+    plt.xlabel("Number of Words")
+    plt.ylabel("Frequency")
+    plt.show()
+
+# Example usage for multiple videos
+if __name__ == "__main__":
+    video_urls = [
+        "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        "https://www.youtube.com/watch?v=3JZ_D3ELwOQ"
+    ]
+    process_multiple_videos(video_urls)
